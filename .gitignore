@@ -1,0 +1,56 @@
+# Gradle
+.gradle/
+build/
+**/build/
+
+# Android Studio / IntelliJ
+.idea/
+.fleet/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Kotlin
+.kotlin/
+
+# Local machine configuration
+local.properties
+
+# Native Android build outputs
+.cxx/
+**/.cxx/
+.externalNativeBuild/
+**/.externalNativeBuild/
+
+# Android generated artifacts
+captures/
+**/captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.aar
+*.hprof
+
+# Signing keys and certificates
+*.jks
+*.keystore
+*.p12
+secrets.properties
+keystore.properties
+
+# Google/Firebase project configuration
+google-services.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

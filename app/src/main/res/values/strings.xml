@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">Sleeper</string>
+    <string name="accessibility_description">Locks the device when double-tapping the lock or home screen</string>
+    <string name="accessibility_disclosure">Sleeper uses the Accessibility service only to detect double-taps on the lock and home screens. It then locks the device.</string>
+    <string name="accessibility_enabled">Accessibility service enabled</string>
+    <string name="accessibility_disabled">Accessibility service disabled</string>
+    <string name="open_accessibility_settings">Open accessibility settings</string>
+    <string name="accessibility_section">Accessibility service</string>
+    <string name="double_tap_section">Double-tap settings</string>
+    <string name="detected_launcher">Detected launcher</string>
+    <string name="launcher_not_detected">Launcher not detected</string>
+    <string name="refresh_launcher">Refresh launcher</string>
+    <string name="lock_screen_double_tap">Lock-screen double tap</string>
+    <string name="home_screen_double_tap">Home-screen double tap</string>
+</resources>
