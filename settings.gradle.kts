@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "sleeper"
+rootProject.name = "dt2s"
 include(":app")

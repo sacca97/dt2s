@@ -1,4 +1,4 @@
-package com.sacca.sleeper
+package com.sacca.dt2s
 
 import android.content.ComponentName
 import android.content.Context
@@ -15,7 +15,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
@@ -25,6 +27,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -35,21 +38,23 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
-import com.sacca.sleeper.ui.theme.SleeperTheme
+import com.sacca.dt2s.ui.theme.Dt2sTheme
 
 class MainActivity : ComponentActivity() {
 
     private var accessibilityServiceEnabled by mutableStateOf(false)
     private var detectedLauncherPackage by mutableStateOf<String?>(null)
+    private var launcherIdentificationFailed by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            SleeperTheme {
-                SleeperScreen(
+            Dt2sTheme {
+                Dt2sScreen(
                     accessibilityServiceEnabled = accessibilityServiceEnabled,
                     detectedLauncherPackage = detectedLauncherPackage,
+                    launcherIdentificationFailed = launcherIdentificationFailed,
                     onOpenAccessibilitySettings = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
@@ -62,23 +67,36 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         accessibilityServiceEnabled = isAccessibilityServiceEnabled()
-        refreshLauncher()
+        val preferences = getSharedPreferences(LockTapService.PREFS_NAME, MODE_PRIVATE)
+        detectedLauncherPackage = preferences.getString(LockTapService.PREF_LAUNCHER_PACKAGE, null)
+        val checkedAt = preferences.getLong(LockTapService.PREF_LAUNCHER_CHECKED_AT, 0L)
+        launcherIdentificationFailed = detectedLauncherPackage == null && checkedAt > 0L
+        if (detectedLauncherPackage == null && preferences.getBoolean(
+                LockTapService.PREF_HOME_SCREEN,
+                true
+            )
+        ) {
+            preferences.edit { putBoolean(LockTapService.PREF_HOME_SCREEN, false) }
+        }
+        if (System.currentTimeMillis() - checkedAt >= LockTapService.LAUNCHER_REFRESH_INTERVAL_MS) {
+            refreshLauncher()
+        }
     }
 
     private fun refreshLauncher() {
         val packageName = LockTapService.resolveLauncherPackage(this)
         val preferences = getSharedPreferences(LockTapService.PREFS_NAME, MODE_PRIVATE)
-        if (packageName != null) {
-            preferences.edit {
+        preferences.edit {
+            if (packageName == null) {
+                remove(LockTapService.PREF_LAUNCHER_PACKAGE)
+                putBoolean(LockTapService.PREF_HOME_SCREEN, false)
+            } else {
                 putString(LockTapService.PREF_LAUNCHER_PACKAGE, packageName)
-                putLong(
-                    LockTapService.PREF_LAUNCHER_CHECKED_AT,
-                    System.currentTimeMillis()
-                )
             }
+            putLong(LockTapService.PREF_LAUNCHER_CHECKED_AT, System.currentTimeMillis())
         }
-        detectedLauncherPackage =
-            packageName ?: preferences.getString(LockTapService.PREF_LAUNCHER_PACKAGE, null)
+        detectedLauncherPackage = packageName
+        launcherIdentificationFailed = packageName == null
     }
 
     private fun isAccessibilityServiceEnabled(): Boolean {
@@ -98,9 +116,10 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun SleeperScreen(
+private fun Dt2sScreen(
     accessibilityServiceEnabled: Boolean,
     detectedLauncherPackage: String?,
+    launcherIdentificationFailed: Boolean,
     onOpenAccessibilitySettings: () -> Unit,
     onRefreshLauncher: () -> Unit
 ) {
@@ -114,6 +133,9 @@ private fun SleeperScreen(
     }
     var homeScreenEnabled by remember {
         mutableStateOf(preferences.getBoolean(LockTapService.PREF_HOME_SCREEN, true))
+    }
+    LaunchedEffect(launcherIdentificationFailed) {
+        if (launcherIdentificationFailed) homeScreenEnabled = false
     }
 
     Scaffold { innerPadding ->
@@ -187,7 +209,8 @@ private fun SleeperScreen(
                     HorizontalDivider()
                     ToggleRow(
                         label = stringResource(R.string.home_screen_double_tap),
-                        checked = homeScreenEnabled,
+                        checked = homeScreenEnabled && detectedLauncherPackage != null,
+                        enabled = detectedLauncherPackage != null,
                         onCheckedChange = {
                             homeScreenEnabled = it
                             preferences.edit {
@@ -208,7 +231,11 @@ private fun SleeperScreen(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        launcherDisplayName(context, detectedLauncherPackage),
+                        if (launcherIdentificationFailed) {
+                            stringResource(R.string.launcher_detection_failed)
+                        } else {
+                            launcherDisplayName(context, detectedLauncherPackage)
+                        },
                         style = MaterialTheme.typography.titleLarge
                     )
                     detectedLauncherPackage?.let { packageName ->
@@ -243,14 +270,21 @@ private fun launcherDisplayName(context: Context, packageName: String?): String 
 private fun ToggleRow(
     label: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

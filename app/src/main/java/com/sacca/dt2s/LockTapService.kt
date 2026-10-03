@@ -1,4 +1,4 @@
-package com.sacca.sleeper
+package com.sacca.dt2s
 
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
@@ -23,6 +23,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.core.content.edit
 
 @SuppressLint("AccessibilityPolicy")
 class LockTapService : AccessibilityService() {
@@ -35,7 +36,7 @@ class LockTapService : AccessibilityService() {
 
     companion object {
         private const val TAG = "LockTap"
-        const val PREFS_NAME = "sleeper_settings"
+        const val PREFS_NAME = "dt2s_settings"
         const val PREF_LOCK_SCREEN = "lock_screen_dt2s"
         const val PREF_HOME_SCREEN = "home_screen_dt2s"
         const val PREF_LAUNCHER_PACKAGE = "launcher_package"
@@ -45,6 +46,12 @@ class LockTapService : AccessibilityService() {
         private const val MIN_TAP_INTERVAL_MS = 40L
         private const val LONG_PRESS_CANCEL_GRACE_MS = 200L
         private const val POST_UNLOCK_REFRESH_DELAY_MS = 350L
+        private const val RELEVANT_WINDOW_CHANGES =
+            AccessibilityEvent.WINDOWS_CHANGE_ADDED or
+                    AccessibilityEvent.WINDOWS_CHANGE_REMOVED or
+                    AccessibilityEvent.WINDOWS_CHANGE_ACTIVE or
+                    AccessibilityEvent.WINDOWS_CHANGE_FOCUSED or
+                    AccessibilityEvent.WINDOWS_CHANGE_ACCESSIBILITY_FOCUSED
 
         fun resolveLauncherPackage(context: Context): String? {
             val homeIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -57,12 +64,11 @@ class LockTapService : AccessibilityService() {
 
             if (isLauncherPackage(context, resolvedPackage)) return resolvedPackage
 
-            return packageManager.queryIntentActivities(homeIntent, 0)
-                .firstNotNullOfOrNull { info ->
-                    info.activityInfo.packageName.takeIf {
-                        isLauncherPackage(context, it)
-                    }
-                }
+            val candidates = packageManager.queryIntentActivities(homeIntent, 0)
+                .map { it.activityInfo.packageName }
+                .distinct()
+                .filter { isLauncherPackage(context, it) }
+            return candidates.singleOrNull()
         }
 
         private fun isLauncherPackage(context: Context, packageName: String?): Boolean =
@@ -112,6 +118,7 @@ class LockTapService : AccessibilityService() {
 
     private val pendingSleepRunnable = Runnable {
         candidateStartedAt = 0L
+        lastTapTime = 0L
 
         if (mode == InteractionMode.LAUNCHER &&
             powerManager.isInteractive &&
@@ -125,8 +132,11 @@ class LockTapService : AccessibilityService() {
             return@Runnable
         }
 
-        log { "SLEEP mode=$mode" }
-        performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        if (performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)) {
+            log { "SLEEP mode=$mode" }
+        } else {
+            log { "SLEEP failed mode=$mode" }
+        }
     }
 
     private val preferencesListener =
@@ -167,7 +177,7 @@ class LockTapService : AccessibilityService() {
 
                 Intent.ACTION_USER_PRESENT -> {
                     log { "USER_PRESENT" }
-                    refreshLauncherPackageIfNeeded(force = true)
+                    refreshLauncherPackageIfNeeded()
                     handler.removeCallbacks(postUnlockRefreshRunnable)
                     foregroundPackage = null
                     updateMode()
@@ -197,7 +207,6 @@ class LockTapService : AccessibilityService() {
 
         registerScreenStateReceiver()
         updateMode()
-        updateAccessibilityEventTypes()
         log { "Accessibility service connected launcher=$launcherPackage" }
     }
 
@@ -236,26 +245,40 @@ class LockTapService : AccessibilityService() {
         setMode(calculateMode())
     }
 
-    private fun refreshLauncherPackageIfNeeded(force: Boolean = false) {
+    private fun refreshLauncherPackageIfNeeded() {
         val lastCheckedAt = preferences.getLong(PREF_LAUNCHER_CHECKED_AT, 0L)
-        if (!force && System.currentTimeMillis() - lastCheckedAt < LAUNCHER_REFRESH_INTERVAL_MS) return
+        val now = System.currentTimeMillis()
+        if (now - lastCheckedAt < LAUNCHER_REFRESH_INTERVAL_MS) {
+            if (launcherPackage.isNullOrBlank()) disableHomeScreenFeature()
+            return
+        }
 
         val resolvedPackage = resolveLauncherPackage(this)
-        if (resolvedPackage == null) return
-
         launcherPackage = resolvedPackage
-        preferences.edit().apply {
-            putString(PREF_LAUNCHER_PACKAGE, resolvedPackage)
-            putLong(PREF_LAUNCHER_CHECKED_AT, System.currentTimeMillis())
-        }.apply()
+        preferences.edit {
+            if (resolvedPackage == null) {
+                remove(PREF_LAUNCHER_PACKAGE)
+                putBoolean(PREF_HOME_SCREEN, false)
+            } else {
+                putString(PREF_LAUNCHER_PACKAGE, resolvedPackage)
+            }
+            putLong(PREF_LAUNCHER_CHECKED_AT, now)
+        }
+        if (resolvedPackage == null) disableHomeScreenFeature()
+    }
+
+    private fun disableHomeScreenFeature() {
+        homeScreenEnabled = false
+        if (preferences.getBoolean(PREF_HOME_SCREEN, true)) {
+            preferences.edit { putBoolean(PREF_HOME_SCREEN, false) }
+        }
     }
 
     private fun refreshForegroundPackage() {
         val availableWindows = windows
-        val activeApplication = availableWindows.firstOrNull { window ->
+        val activeWindow = availableWindows.firstOrNull { it.isActive }
+        val activeApplication = activeWindow ?: availableWindows.firstOrNull { window ->
             window.type == AccessibilityWindowInfo.TYPE_APPLICATION && window.isFocused
-        } ?: availableWindows.firstOrNull { window ->
-            window.type == AccessibilityWindowInfo.TYPE_APPLICATION && window.isActive
         }
 
         val packageName = activeApplication?.let { window ->
@@ -285,9 +308,9 @@ class LockTapService : AccessibilityService() {
             log { "MODE $mode -> $newMode" }
             mode = newMode
             cancelGestureCandidate("mode-changed")
-            updateAccessibilityEventTypes()
         }
 
+        updateAccessibilityEventTypes()
         if (newMode == InteractionMode.OFF) disableWatcher()
         else enableWatcher()
     }
@@ -365,7 +388,6 @@ class LockTapService : AccessibilityService() {
             return
         }
 
-        lastTapTime = 0L
         candidateStartedAt = time
         log { "CANDIDATE mode=$mode" }
         handler.postDelayed(
@@ -408,6 +430,9 @@ class LockTapService : AccessibilityService() {
         event: AccessibilityEvent,
         packageName: String?
     ) {
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
+            event.windowChanges != 0 && event.windowChanges and RELEVANT_WINDOW_CHANGES == 0
+        ) return
         if (!isEventCurrent(event)) return
 
         if (homeScreenEnabled && powerManager.isInteractive &&
@@ -425,7 +450,11 @@ class LockTapService : AccessibilityService() {
 
     private fun updateAccessibilityEventTypes() {
         val info = serviceInfo
-        val wanted = if (mode == InteractionMode.OFF) windowEventTypes else activeEventTypes
+        val wanted = when {
+            !powerManager.isInteractive || (!lockScreenEnabled && !homeScreenEnabled) -> 0
+            mode == InteractionMode.OFF -> windowEventTypes
+            else -> activeEventTypes
+        }
         if (info.eventTypes == wanted) return
 
         info.eventTypes = wanted
@@ -433,11 +462,12 @@ class LockTapService : AccessibilityService() {
     }
 
     private fun isEventCurrent(event: AccessibilityEvent) =
-        candidateStartedAt == 0L || event.eventTime >= candidateStartedAt
+        candidateStartedAt == 0L || event.eventTime >= lastTapTime
 
     private fun cancelForEvent(event: AccessibilityEvent, reason: () -> String) {
-        val afterCandidate = candidateStartedAt != 0L && event.eventTime >= candidateStartedAt
-        val afterFirstTap = lastTapTime != 0L && event.eventTime >= lastTapTime
+        val afterCandidate = candidateStartedAt != 0L && event.eventTime >= lastTapTime
+        val afterFirstTap = lastTapTime != 0L && event.eventTime >= lastTapTime &&
+                (candidateStartedAt != 0L || event.eventTime - lastTapTime <= DOUBLE_TAP_TIMEOUT_MS)
 
         if (afterCandidate || afterFirstTap) {
             cancelGestureCandidate(reason())

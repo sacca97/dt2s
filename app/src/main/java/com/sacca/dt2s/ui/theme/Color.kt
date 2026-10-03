@@ -1,4 +1,4 @@
-package com.sacca.sleeper.ui.theme
+package com.sacca.dt2s.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
