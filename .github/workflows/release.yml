@@ -33,8 +33,8 @@ jobs:
           } > keystore.properties
       - run: ./gradlew assembleRelease
       - name: Name the APK
-        run: cp app/build/outputs/apk/release/app-release.apk "dt2s-${GITHUB_REF_NAME}.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk dt2s-release.apk
       - uses: softprops/action-gh-release@v2
         with:
-          files: dt2s-*.apk
+          files: dt2s-release.apk
           generate_release_notes: true
