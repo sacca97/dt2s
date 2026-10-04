@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
@@ -190,10 +191,12 @@ private fun Dt2sScreen(
             }
 
             Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                     Text(
                         stringResource(R.string.double_tap_section),
-                        modifier = Modifier.padding(vertical = 8.dp),
                         style = MaterialTheme.typography.titleMedium
                     )
                     ToggleRow(
@@ -224,7 +227,7 @@ private fun Dt2sScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
                         stringResource(R.string.detected_launcher),
@@ -236,7 +239,11 @@ private fun Dt2sScreen(
                         } else {
                             launcherDisplayName(context, detectedLauncherPackage)
                         },
-                        style = MaterialTheme.typography.titleLarge
+                        style = if (launcherIdentificationFailed) {
+                            MaterialTheme.typography.bodyMedium
+                        } else {
+                            MaterialTheme.typography.titleLarge
+                        }
                     )
                     detectedLauncherPackage?.let { packageName ->
                         Text(
@@ -281,10 +288,22 @@ private fun ToggleRow(
                 enabled = enabled,
                 role = Role.Switch,
                 onValueChange = onCheckedChange
-            ),
+            )
+            .heightIn(min = 56.dp)
+            .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(label, modifier = Modifier.weight(1f))
+        Text(
+            label,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+            }
+        )
         Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }

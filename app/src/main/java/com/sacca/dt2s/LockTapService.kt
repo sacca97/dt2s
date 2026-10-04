@@ -14,11 +14,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
-import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -44,7 +44,11 @@ class LockTapService : AccessibilityService() {
         const val LAUNCHER_REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
         private const val MIN_TAP_INTERVAL_MS = 40L
-        private const val LONG_PRESS_CANCEL_GRACE_MS = 200L
+        // Time to wait after the second tap for a click/scroll event that would veto the lock.
+        // Click events fire on finger-up (~100 ms), so this is much shorter than a long press.
+        private const val CANDIDATE_CONFIRM_DELAY_MS = 150L
+        private const val LAUNCHER_RECHECK_DELAY_MS = 300L
+        private const val LAUNCHER_TRUST_WINDOW_MS = 1500L
         private const val POST_UNLOCK_REFRESH_DELAY_MS = 350L
         private const val RELEVANT_WINDOW_CHANGES =
             AccessibilityEvent.WINDOWS_CHANGE_ADDED or
@@ -91,6 +95,7 @@ class LockTapService : AccessibilityService() {
     private var lastTapTime = 0L
     private var candidateStartedAt = 0L
     private var receiverRegistered = false
+    private var launcherConfirmedAt = 0L
     private var lockScreenEnabled = true
     private var homeScreenEnabled = true
 
@@ -120,7 +125,12 @@ class LockTapService : AccessibilityService() {
         candidateStartedAt = 0L
         lastTapTime = 0L
 
+        // A fresh launcher window event beats the window snapshot, which can lag behind
+        // during the home transition and would wrongly veto the lock.
+        val launcherRecentlyConfirmed =
+            SystemClock.uptimeMillis() - launcherConfirmedAt < LAUNCHER_TRUST_WINDOW_MS
         if (mode == InteractionMode.LAUNCHER &&
+            !launcherRecentlyConfirmed &&
             powerManager.isInteractive &&
             !keyguardManager.isKeyguardLocked
         ) {
@@ -172,6 +182,7 @@ class LockTapService : AccessibilityService() {
                     log { "SCREEN_OFF" }
                     handler.removeCallbacks(postUnlockRefreshRunnable)
                     foregroundPackage = null
+                    launcherConfirmedAt = 0L
                     updateMode()
                 }
 
@@ -392,7 +403,7 @@ class LockTapService : AccessibilityService() {
         log { "CANDIDATE mode=$mode" }
         handler.postDelayed(
             pendingSleepRunnable,
-            ViewConfiguration.getLongPressTimeout().toLong() + LONG_PRESS_CANCEL_GRACE_MS
+            CANDIDATE_CONFIRM_DELAY_MS
         )
     }
 
@@ -439,13 +450,37 @@ class LockTapService : AccessibilityService() {
             !keyguardManager.isKeyguardLocked
         ) {
             refreshForegroundPackage()
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                !packageName.isNullOrBlank()
+            ) {
+                // The event is fresher than the window snapshot. Only trust it for the
+                // launcher: System UI and IME events must not enable launcher mode.
+                if (packageName == launcherPackage) {
+                    foregroundPackage = packageName
+                    launcherConfirmedAt = SystemClock.uptimeMillis()
+                } else if (packageName != "com.android.systemui") {
+                    launcherConfirmedAt = 0L
+                }
+            }
             if (foregroundPackage == null && !packageName.isNullOrBlank()) {
                 foregroundPackage = packageName
             }
         }
 
         updateMode(refreshForeground = false)
+        scheduleLauncherRecheck()
         cancelForEvent(event) { "window-event" }
+    }
+
+    // If the window snapshot was stale while the home transition ran and no further event
+    // arrives, re-read it once things settle so launcher mode still engages.
+    private fun scheduleLauncherRecheck() {
+        handler.removeCallbacks(postUnlockRefreshRunnable)
+        if (homeScreenEnabled && mode != InteractionMode.LAUNCHER &&
+            powerManager.isInteractive && !keyguardManager.isKeyguardLocked
+        ) {
+            handler.postDelayed(postUnlockRefreshRunnable, LAUNCHER_RECHECK_DELAY_MS)
+        }
     }
 
     private fun updateAccessibilityEventTypes() {
