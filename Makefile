@@ -34,16 +34,16 @@ adb-install:
 	esac; \
 	adb -s "$$serial" install -r "$(APK)"
 
-# Usage: make release VERSION=1.1
+# Usage: make release VERSION=1.1.0
 release:
 	@set -eu; \
-	[ -n "$(VERSION)" ] || { echo "Usage: make release VERSION=x.y" >&2; exit 1; }; \
+	printf '%s\n' "$(VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "Usage: make release VERSION=x.y.z" >&2; exit 1; }; \
 	[ -z "$$(git status --porcelain)" ] || { echo "Working tree not clean." >&2; exit 1; }; \
 	cur=$$(sed -n 's/.*versionName = "\(.*\)"/\1/p' app/build.gradle.kts); \
 	if [ "$$cur" != "$(VERSION)" ]; then \
 		code=$$(sed -n 's/.*versionCode = \([0-9]*\)/\1/p' app/build.gradle.kts); \
 		sed -i "s/versionCode = $$code/versionCode = $$((code + 1))/; s/versionName = \".*\"/versionName = \"$(VERSION)\"/" app/build.gradle.kts; \
-		git commit -am "Release v$(VERSION)"; \
+		git commit -am "Release $(VERSION)"; \
 	fi; \
-	git tag "v$(VERSION)"; \
-	git push origin HEAD "v$(VERSION)"
+	git tag "$(VERSION)"; \
+	git push origin HEAD "$(VERSION)"
