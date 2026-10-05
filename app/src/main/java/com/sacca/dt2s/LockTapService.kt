@@ -50,6 +50,7 @@ class LockTapService : AccessibilityService() {
         private const val LAUNCHER_RECHECK_DELAY_MS = 300L
         private const val LAUNCHER_TRUST_WINDOW_MS = 1500L
         private const val POST_UNLOCK_REFRESH_DELAY_MS = 350L
+        private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         private const val RELEVANT_WINDOW_CHANGES =
             AccessibilityEvent.WINDOWS_CHANGE_ADDED or
                     AccessibilityEvent.WINDOWS_CHANGE_REMOVED or
@@ -129,12 +130,10 @@ class LockTapService : AccessibilityService() {
         // during the home transition and would wrongly veto the lock.
         val launcherRecentlyConfirmed =
             SystemClock.uptimeMillis() - launcherConfirmedAt < LAUNCHER_TRUST_WINDOW_MS
-        if (mode == InteractionMode.LAUNCHER &&
-            !launcherRecentlyConfirmed &&
-            powerManager.isInteractive &&
-            !keyguardManager.isKeyguardLocked
+        if (mode == InteractionMode.LOCKSCREEN ||
+            (mode == InteractionMode.LAUNCHER && !launcherRecentlyConfirmed)
         ) {
-            refreshForegroundPackage()
+            if (needsForegroundTracking()) refreshForegroundPackage()
         }
 
         if (!isModeStillValid()) {
@@ -237,7 +236,8 @@ class LockTapService : AccessibilityService() {
     private fun calculateMode(): InteractionMode = when {
         !powerManager.isInteractive -> InteractionMode.OFF
         keyguardManager.isKeyguardLocked ->
-            if (lockScreenEnabled) InteractionMode.LOCKSCREEN
+            // An app shown over the keyguard (e.g. the camera) must keep its own double taps.
+            if (lockScreenEnabled && !isAppOverKeyguard()) InteractionMode.LOCKSCREEN
             else InteractionMode.OFF
         launcherPackage != null &&
                 foregroundPackage == launcherPackage &&
@@ -246,10 +246,15 @@ class LockTapService : AccessibilityService() {
         else -> InteractionMode.OFF
     }
 
+    private fun isAppOverKeyguard(): Boolean =
+        foregroundPackage.let { it != null && it != SYSTEM_UI_PACKAGE }
+
+    private fun needsForegroundTracking(): Boolean =
+        powerManager.isInteractive &&
+                if (keyguardManager.isKeyguardLocked) lockScreenEnabled else homeScreenEnabled
+
     private fun updateMode(refreshForeground: Boolean = true) {
-        if (refreshForeground && homeScreenEnabled &&
-            powerManager.isInteractive && !keyguardManager.isKeyguardLocked
-        ) {
+        if (refreshForeground && needsForegroundTracking()) {
             refreshForegroundPackage()
         }
 
@@ -446,9 +451,7 @@ class LockTapService : AccessibilityService() {
         ) return
         if (!isEventCurrent(event)) return
 
-        if (homeScreenEnabled && powerManager.isInteractive &&
-            !keyguardManager.isKeyguardLocked
-        ) {
+        if (needsForegroundTracking()) {
             refreshForegroundPackage()
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 !packageName.isNullOrBlank()
@@ -458,7 +461,7 @@ class LockTapService : AccessibilityService() {
                 if (packageName == launcherPackage) {
                     foregroundPackage = packageName
                     launcherConfirmedAt = SystemClock.uptimeMillis()
-                } else if (packageName != "com.android.systemui") {
+                } else if (packageName != SYSTEM_UI_PACKAGE) {
                     launcherConfirmedAt = 0L
                 }
             }

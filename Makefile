@@ -1,11 +1,21 @@
-.PHONY: build install release
+.PHONY: build install build-release install-release adb-install release
 
 APK := app/build/outputs/apk/debug/app-debug.apk
+RELEASE_APK := app/build/outputs/apk/release/app-release.apk
 
 build:
 	./gradlew assembleDebug
 
+build-release:
+	./gradlew assembleRelease
+
 install: build
+	@$(MAKE) --no-print-directory adb-install APK=$(APK)
+
+install-release: build-release
+	@$(MAKE) --no-print-directory adb-install APK=$(RELEASE_APK)
+
+adb-install:
 	@set -eu; \
 	set -- $$(adb devices | awk 'NR > 1 && $$2 == "device" { print $$1 }'); \
 	case "$$#" in \

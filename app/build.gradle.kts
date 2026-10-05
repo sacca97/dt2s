@@ -41,7 +41,8 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
-            signingConfigs.findByName("release")?.let { signingConfig = it }
+            // Without keystore.properties, fall back to the debug key so local release builds are installable.
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
