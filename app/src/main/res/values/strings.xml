@@ -13,4 +13,12 @@
     <string name="refresh_launcher">Refresh launcher</string>
     <string name="lock_screen_double_tap">Lock-screen double tap</string>
     <string name="home_screen_double_tap">Home-screen double tap</string>
+    <string name="updates_section">App updates</string>
+    <string name="check_for_updates">Check for updates</string>
+    <string name="checking_for_updates">Checking…</string>
+    <string name="update_check_initial">Check GitHub for the latest version.</string>
+    <string name="update_check_up_to_date">You’re using the latest version.</string>
+    <string name="update_check_failed">Could not check for updates. Check your connection and try again.</string>
+    <string name="update_available">Version %1$s is available.</string>
+    <string name="open_release_page">Open release page</string>
 </resources>

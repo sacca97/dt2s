@@ -3,11 +3,13 @@ package com.sacca.dt2s
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,26 +42,45 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
 import com.sacca.dt2s.ui.theme.Dt2sTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
 
     private var accessibilityServiceEnabled by mutableStateOf(false)
     private var detectedLauncherPackage by mutableStateOf<String?>(null)
     private var launcherIdentificationFailed by mutableStateOf(false)
+    private var isCheckingUpdates by mutableStateOf(false)
+    private var updateCheckFailed by mutableStateOf(false)
+    private var hasCheckedUpdates by mutableStateOf(false)
+    private var updateAvailable by mutableStateOf(false)
+    private var latestVersion by mutableStateOf<String?>(null)
+    private var releaseUrl by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        UpdateCheckWorker.schedule(this)
+        refreshUpdateStatus()
         setContent {
             Dt2sTheme {
                 Dt2sScreen(
                     accessibilityServiceEnabled = accessibilityServiceEnabled,
                     detectedLauncherPackage = detectedLauncherPackage,
                     launcherIdentificationFailed = launcherIdentificationFailed,
+                    isCheckingUpdates = isCheckingUpdates,
+                    updateCheckFailed = updateCheckFailed,
+                    hasCheckedUpdates = hasCheckedUpdates,
+                    updateAvailable = updateAvailable,
+                    latestVersion = latestVersion,
+                    releaseUrl = releaseUrl,
                     onOpenAccessibilitySettings = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
-                    onRefreshLauncher = ::refreshLauncher
+                    onRefreshLauncher = ::refreshLauncher,
+                    onCheckForUpdates = ::checkForUpdates,
+                    onOpenReleasePage = { url -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
                 )
             }
         }
@@ -67,6 +88,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        refreshUpdateStatus()
         accessibilityServiceEnabled = isAccessibilityServiceEnabled()
         val preferences = getSharedPreferences(LockTapService.PREFS_NAME, MODE_PRIVATE)
         detectedLauncherPackage = preferences.getString(LockTapService.PREF_LAUNCHER_PACKAGE, null)
@@ -81,6 +103,34 @@ class MainActivity : ComponentActivity() {
         }
         if (System.currentTimeMillis() - checkedAt >= LockTapService.LAUNCHER_REFRESH_INTERVAL_MS) {
             refreshLauncher()
+        }
+    }
+
+    private fun refreshUpdateStatus() {
+        val preferences = getSharedPreferences(UpdateChecker.PREFS_NAME, MODE_PRIVATE)
+        hasCheckedUpdates = preferences.getLong(UpdateChecker.PREF_CHECKED_AT, 0L) > 0L
+        updateAvailable = preferences.getBoolean(UpdateChecker.PREF_UPDATE_AVAILABLE, false)
+        latestVersion = preferences.getString(UpdateChecker.PREF_LATEST_VERSION, null)
+        releaseUrl = preferences.getString(UpdateChecker.PREF_RELEASE_URL, null)
+    }
+
+    private fun checkForUpdates() {
+        if (isCheckingUpdates) return
+        isCheckingUpdates = true
+        updateCheckFailed = false
+        lifecycleScope.launch {
+            try {
+                val check = withContext(Dispatchers.IO) { UpdateChecker.check(this@MainActivity) }
+                UpdateChecker.save(this@MainActivity, check)
+                hasCheckedUpdates = true
+                updateAvailable = check.updateAvailable
+                latestVersion = check.latestVersion
+                releaseUrl = check.releaseUrl
+            } catch (_: Exception) {
+                updateCheckFailed = true
+            } finally {
+                isCheckingUpdates = false
+            }
         }
     }
 
@@ -121,8 +171,16 @@ private fun Dt2sScreen(
     accessibilityServiceEnabled: Boolean,
     detectedLauncherPackage: String?,
     launcherIdentificationFailed: Boolean,
+    isCheckingUpdates: Boolean,
+    updateCheckFailed: Boolean,
+    hasCheckedUpdates: Boolean,
+    updateAvailable: Boolean,
+    latestVersion: String?,
+    releaseUrl: String?,
     onOpenAccessibilitySettings: () -> Unit,
-    onRefreshLauncher: () -> Unit
+    onRefreshLauncher: () -> Unit,
+    onCheckForUpdates: () -> Unit,
+    onOpenReleasePage: (String) -> Unit
 ) {
     val context = LocalContext.current
     val preferences = remember {
@@ -152,6 +210,46 @@ private fun Dt2sScreen(
                 stringResource(R.string.app_name),
                 style = MaterialTheme.typography.headlineLarge
             )
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        stringResource(R.string.updates_section),
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        when {
+                            isCheckingUpdates -> stringResource(R.string.checking_for_updates)
+                            updateCheckFailed -> stringResource(R.string.update_check_failed)
+                            updateAvailable && latestVersion != null -> stringResource(
+                                R.string.update_available,
+                                latestVersion
+                            )
+                            hasCheckedUpdates -> stringResource(R.string.update_check_up_to_date)
+                            else -> stringResource(R.string.update_check_initial)
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(
+                        onClick = onCheckForUpdates,
+                        enabled = !isCheckingUpdates,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(if (isCheckingUpdates) R.string.checking_for_updates else R.string.check_for_updates))
+                    }
+                    if (updateAvailable && releaseUrl != null) {
+                        OutlinedButton(
+                            onClick = { onOpenReleasePage(releaseUrl) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.open_release_page))
+                        }
+                    }
+                }
+            }
 
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(
