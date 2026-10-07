@@ -16,6 +16,7 @@ build/
 
 # Local machine configuration
 local.properties
+gradle/gradle-daemon-jvm.properties
 
 # Native Android build outputs
 .cxx/
