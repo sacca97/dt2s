@@ -97,6 +97,8 @@ class LockTapService : AccessibilityService() {
     private var candidateStartedAt = 0L
     private var receiverRegistered = false
     private var launcherConfirmedAt = 0L
+    private var launcherTransitionFromPackage: String? = null
+    private var lastWindowStateEventTime = 0L
     private var lockScreenEnabled = true
     private var homeScreenEnabled = true
 
@@ -128,8 +130,7 @@ class LockTapService : AccessibilityService() {
 
         // A fresh launcher window event beats the window snapshot, which can lag behind
         // during the home transition and would wrongly veto the lock.
-        val launcherRecentlyConfirmed =
-            SystemClock.uptimeMillis() - launcherConfirmedAt < LAUNCHER_TRUST_WINDOW_MS
+        val launcherRecentlyConfirmed = isLauncherRecentlyConfirmed()
         if (mode == InteractionMode.LOCKSCREEN ||
             (mode == InteractionMode.LAUNCHER && !launcherRecentlyConfirmed)
         ) {
@@ -301,7 +302,16 @@ class LockTapService : AccessibilityService() {
             packageName(window.root)
         } ?: packageName(rootInActiveWindow)
 
-        foregroundPackage = packageName?.takeIf { it.isNotBlank() }
+        val snapshotPackage = packageName?.takeIf { it.isNotBlank() }
+        // Home animations can briefly keep reporting the app we just left. Preserve
+        // the newer launcher event until the snapshot catches up, but not a new app.
+        if (mode == InteractionMode.LAUNCHER && !keyguardManager.isKeyguardLocked &&
+            isLauncherRecentlyConfirmed() &&
+            (snapshotPackage == null || snapshotPackage == launcherTransitionFromPackage) &&
+            snapshotPackage != SYSTEM_UI_PACKAGE
+        ) return
+
+        foregroundPackage = snapshotPackage
     }
 
     private fun packageName(root: AccessibilityNodeInfo?): String? {
@@ -449,9 +459,20 @@ class LockTapService : AccessibilityService() {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED &&
             event.windowChanges != 0 && event.windowChanges and RELEVANT_WINDOW_CHANGES == 0
         ) return
-        if (!isEventCurrent(event)) return
+        if (event.eventTime < lastWindowStateEventTime) return
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            lastWindowStateEventTime = event.eventTime
+        }
 
         if (needsForegroundTracking()) {
+            val previousForegroundPackage = foregroundPackage
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                !packageName.isNullOrBlank() && packageName != launcherPackage &&
+                packageName != SYSTEM_UI_PACKAGE
+            ) {
+                launcherConfirmedAt = 0L
+                launcherTransitionFromPackage = null
+            }
             refreshForegroundPackage()
             if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
                 !packageName.isNullOrBlank()
@@ -459,10 +480,13 @@ class LockTapService : AccessibilityService() {
                 // The event is fresher than the window snapshot. Only trust it for the
                 // launcher: System UI and IME events must not enable launcher mode.
                 if (packageName == launcherPackage) {
+                    if (mode != InteractionMode.LAUNCHER) {
+                        launcherTransitionFromPackage =
+                            foregroundPackage?.takeIf { it != launcherPackage }
+                                ?: previousForegroundPackage
+                    }
                     foregroundPackage = packageName
-                    launcherConfirmedAt = SystemClock.uptimeMillis()
-                } else if (packageName != SYSTEM_UI_PACKAGE) {
-                    launcherConfirmedAt = 0L
+                    launcherConfirmedAt = event.eventTime
                 }
             }
             if (foregroundPackage == null && !packageName.isNullOrBlank()) {
@@ -472,7 +496,14 @@ class LockTapService : AccessibilityService() {
 
         updateMode(refreshForeground = false)
         scheduleLauncherRecheck()
-        cancelForEvent(event) { "window-event" }
+        // Repeated launcher window events during the home animation do not invalidate
+        // taps on the launcher. Mode changes and actual view interactions still do.
+        if (mode != InteractionMode.LAUNCHER || !isLauncherRecentlyConfirmed() ||
+            (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+                    packageName != launcherPackage)
+        ) {
+            cancelForEvent(event) { "window-event" }
+        }
     }
 
     // If the window snapshot was stale while the home transition ran and no further event
@@ -499,8 +530,9 @@ class LockTapService : AccessibilityService() {
         serviceInfo = info
     }
 
-    private fun isEventCurrent(event: AccessibilityEvent) =
-        candidateStartedAt == 0L || event.eventTime >= lastTapTime
+    private fun isLauncherRecentlyConfirmed(): Boolean =
+        launcherConfirmedAt != 0L &&
+                SystemClock.uptimeMillis() - launcherConfirmedAt < LAUNCHER_TRUST_WINDOW_MS
 
     private fun cancelForEvent(event: AccessibilityEvent, reason: () -> String) {
         val afterCandidate = candidateStartedAt != 0L && event.eventTime >= lastTapTime
