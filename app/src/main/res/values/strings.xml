@@ -21,4 +21,9 @@
     <string name="update_check_failed">Could not check for updates. Check your connection and try again.</string>
     <string name="update_available">Version %1$s is available.</string>
     <string name="open_release_page">Open release page</string>
+    <string name="download_and_install">Download &amp; install</string>
+    <string name="downloading_update">Downloading update…</string>
+    <string name="downloading_update_percent">Downloading update… %1$d%%</string>
+    <string name="update_download_failed">Could not download the update. Try again, or open the release page.</string>
+    <string name="install_permission_hint">Allow installs from this source, then the download will start.</string>
 </resources>
