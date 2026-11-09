@@ -3,6 +3,7 @@ package com.sacca.dt2s
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
 import android.app.KeyguardManager
+import android.app.admin.DevicePolicyManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -23,6 +24,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.Toast
 import androidx.core.content.edit
 
 @SuppressLint("AccessibilityPolicy")
@@ -39,11 +41,15 @@ class LockTapService : AccessibilityService() {
         const val PREFS_NAME = "dt2s_settings"
         const val PREF_LOCK_SCREEN = "lock_screen_dt2s"
         const val PREF_HOME_SCREEN = "home_screen_dt2s"
+        const val PREF_LOCKDOWN_TAPS = "lockdown_taps"
         const val PREF_LAUNCHER_PACKAGE = "launcher_package"
         const val PREF_LAUNCHER_CHECKED_AT = "launcher_checked_at"
         const val LAUNCHER_REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
         private const val MIN_TAP_INTERVAL_MS = 40L
+        // Taps that trigger lockdown. Taps 3 and 4 must each land inside the normal
+        // confirm window, so the plain double-tap lock is never delayed.
+        private const val LOCKDOWN_TAP_COUNT = 4
         // Time to wait after the second tap for a click/scroll event that would veto the lock.
         // Click events fire on finger-up (~100 ms), so this is much shorter than a long press.
         private const val CANDIDATE_CONFIRM_DELAY_MS = 150L
@@ -87,6 +93,7 @@ class LockTapService : AccessibilityService() {
     private lateinit var windowManager: WindowManager
     private lateinit var keyguardManager: KeyguardManager
     private lateinit var powerManager: PowerManager
+    private lateinit var devicePolicyManager: DevicePolicyManager
     private lateinit var preferences: SharedPreferences
 
     private var mode = InteractionMode.OFF
@@ -94,6 +101,8 @@ class LockTapService : AccessibilityService() {
     private var launcherPackage: String? = null
     private var watcher: View? = null
     private var lastTapTime = 0L
+    private var tapCount = 0
+    private var lastCandidateTapTime = 0L
     private var candidateStartedAt = 0L
     private var receiverRegistered = false
     private var launcherConfirmedAt = 0L
@@ -125,8 +134,16 @@ class LockTapService : AccessibilityService() {
     }
 
     private val pendingSleepRunnable = Runnable {
+        val taps = tapCount
+        val lockdown = taps >= LOCKDOWN_TAP_COUNT
         candidateStartedAt = 0L
         lastTapTime = 0L
+        tapCount = 0
+        // Three taps is neither a double tap nor lockdown; keep the old behaviour (no lock).
+        if (taps == LOCKDOWN_TAP_COUNT - 1) {
+            log { "CANCEL reason=three-taps" }
+            return@Runnable
+        }
 
         // A fresh launcher window event beats the window snapshot, which can lag behind
         // during the home transition and would wrongly veto the lock.
@@ -142,7 +159,12 @@ class LockTapService : AccessibilityService() {
             return@Runnable
         }
 
-        if (performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)) {
+        if (lockdown && lockNowAsAdmin()) {
+            log { "LOCKDOWN mode=$mode" }
+        } else if (performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)) {
+            if (lockdown) {
+                Toast.makeText(this, R.string.lockdown_unavailable, Toast.LENGTH_SHORT).show()
+            }
             log { "SLEEP mode=$mode" }
         } else {
             log { "SLEEP failed mode=$mode" }
@@ -209,6 +231,7 @@ class LockTapService : AccessibilityService() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         keyguardManager = getSystemService(KEYGUARD_SERVICE) as KeyguardManager
         powerManager = getSystemService(POWER_SERVICE) as PowerManager
+        devicePolicyManager = getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
         preferences = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         lockScreenEnabled = preferences.getBoolean(PREF_LOCK_SCREEN, true)
         homeScreenEnabled = preferences.getBoolean(PREF_HOME_SCREEN, true)
@@ -391,6 +414,19 @@ class LockTapService : AccessibilityService() {
         if (mode == InteractionMode.OFF) return
 
         if (candidateStartedAt != 0L) {
+            val delta = time - lastCandidateTapTime
+            if (tapCount < LOCKDOWN_TAP_COUNT && delta >= MIN_TAP_INTERVAL_MS &&
+                lockdownTapsEnabled()
+            ) {
+                // Extra tap while the lock is pending: restart the confirm window. A stop
+                // after tap 3 cancels; tap 4 upgrades the lock to lockdown.
+                tapCount++
+                lastCandidateTapTime = time
+                log { "TOUCH #$tapCount delta=$delta mode=$mode" }
+                handler.removeCallbacks(pendingSleepRunnable)
+                handler.postDelayed(pendingSleepRunnable, CANDIDATE_CONFIRM_DELAY_MS)
+                return
+            }
             cancelGestureCandidate("touch-during-candidate")
             return
         }
@@ -415,6 +451,8 @@ class LockTapService : AccessibilityService() {
         }
 
         candidateStartedAt = time
+        lastCandidateTapTime = time
+        tapCount = 2
         log { "CANDIDATE mode=$mode" }
         handler.postDelayed(
             pendingSleepRunnable,
@@ -424,6 +462,7 @@ class LockTapService : AccessibilityService() {
 
     private fun startFirstTap(time: Long) {
         lastTapTime = time
+        tapCount = 1
         log { "TOUCH #1 mode=$mode" }
     }
 
@@ -550,8 +589,21 @@ class LockTapService : AccessibilityService() {
         }
         lastTapTime = 0L
         candidateStartedAt = 0L
+        tapCount = 0
         handler.removeCallbacks(pendingSleepRunnable)
     }
+
+    private fun lockdownTapsEnabled(): Boolean =
+        preferences.getBoolean(PREF_LOCKDOWN_TAPS, false) &&
+                devicePolicyManager.isAdminActive(LockdownAdminReceiver.component(this))
+
+    // lockNow() as device admin also requires strong auth (PIN/pattern/password) to unlock,
+    // which is what disables biometrics, like the power-menu lockdown.
+    private fun lockNowAsAdmin(): Boolean =
+        lockdownTapsEnabled() &&
+                runCatching { devicePolicyManager.lockNow() }
+                    .onFailure { log { "LOCKDOWN failed=${it::class.simpleName}" } }
+                    .isSuccess
 
     private fun isModeStillValid(): Boolean =
         mode != InteractionMode.OFF && mode == calculateMode()

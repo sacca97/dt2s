@@ -1,18 +1,25 @@
 package com.sacca.dt2s
 
+import android.app.admin.DevicePolicyManager
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,11 +30,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -63,6 +73,7 @@ class MainActivity : ComponentActivity() {
     private var downloadProgress by mutableStateOf<Float?>(null)
     private var updateInstallFailed by mutableStateOf(false)
     private var installPermissionRequested by mutableStateOf(false)
+    private var deviceAdminActive by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,6 +97,9 @@ class MainActivity : ComponentActivity() {
                     downloadProgress = downloadProgress,
                     updateInstallFailed = updateInstallFailed,
                     installPermissionRequested = installPermissionRequested,
+                    deviceAdminActive = deviceAdminActive,
+                    onRequestDeviceAdmin = ::requestDeviceAdmin,
+                    onRemoveDeviceAdmin = ::removeDeviceAdmin,
                     onOpenAccessibilitySettings = {
                         startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                     },
@@ -106,6 +120,7 @@ class MainActivity : ComponentActivity() {
         }
         refreshUpdateStatus()
         accessibilityServiceEnabled = isAccessibilityServiceEnabled()
+        refreshDeviceAdmin()
         val preferences = getSharedPreferences(LockTapService.PREFS_NAME, MODE_PRIVATE)
         detectedLauncherPackage = preferences.getString(LockTapService.PREF_LAUNCHER_PACKAGE, null)
         val checkedAt = preferences.getLong(LockTapService.PREF_LAUNCHER_CHECKED_AT, 0L)
@@ -120,6 +135,33 @@ class MainActivity : ComponentActivity() {
         if (System.currentTimeMillis() - checkedAt >= LockTapService.LAUNCHER_REFRESH_INTERVAL_MS) {
             refreshLauncher()
         }
+    }
+
+    private fun devicePolicyManager() =
+        getSystemService(DEVICE_POLICY_SERVICE) as DevicePolicyManager
+
+    private fun refreshDeviceAdmin() {
+        deviceAdminActive =
+            devicePolicyManager().isAdminActive(LockdownAdminReceiver.component(this))
+    }
+
+    private fun requestDeviceAdmin() {
+        val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+            .putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, LockdownAdminReceiver.component(this))
+            .putExtra(
+                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                getString(R.string.device_admin_explanation)
+            )
+        try {
+            startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.device_admin_unavailable, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun removeDeviceAdmin() {
+        devicePolicyManager().removeActiveAdmin(LockdownAdminReceiver.component(this))
+        refreshDeviceAdmin()
     }
 
     private fun refreshUpdateStatus() {
@@ -236,6 +278,9 @@ private fun Dt2sScreen(
     downloadProgress: Float?,
     updateInstallFailed: Boolean,
     installPermissionRequested: Boolean,
+    deviceAdminActive: Boolean,
+    onRequestDeviceAdmin: () -> Unit,
+    onRemoveDeviceAdmin: () -> Unit,
     onOpenAccessibilitySettings: () -> Unit,
     onRefreshLauncher: () -> Unit,
     onCheckForUpdates: () -> Unit,
@@ -253,8 +298,17 @@ private fun Dt2sScreen(
     var homeScreenEnabled by remember {
         mutableStateOf(preferences.getBoolean(LockTapService.PREF_HOME_SCREEN, true))
     }
+    // Re-read when admin changes: LockdownAdminReceiver clears the pref on revoke.
+    var lockdownTapsEnabled by remember(deviceAdminActive) {
+        mutableStateOf(preferences.getBoolean(LockTapService.PREF_LOCKDOWN_TAPS, false))
+    }
     LaunchedEffect(launcherIdentificationFailed) {
         if (launcherIdentificationFailed) homeScreenEnabled = false
+    }
+    val versionName = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull()
     }
 
     Scaffold { innerPadding ->
@@ -266,184 +320,273 @@ private fun Dt2sScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                stringResource(R.string.app_name),
-                style = MaterialTheme.typography.headlineLarge
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.app_name),
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    stringResource(R.string.tagline),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+            if (!accessibilityServiceEnabled) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
                 ) {
-                    Text(
-                        stringResource(R.string.updates_section),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        when {
-                            isCheckingUpdates -> stringResource(R.string.checking_for_updates)
-                            isDownloadingUpdate -> downloadProgress?.let {
-                                stringResource(R.string.downloading_update_percent, (it * 100).toInt())
-                            } ?: stringResource(R.string.downloading_update)
-                            updateInstallFailed -> stringResource(R.string.update_download_failed)
-                            installPermissionRequested -> stringResource(R.string.install_permission_hint)
-                            updateCheckFailed -> stringResource(R.string.update_check_failed)
-                            updateAvailable && latestVersion != null -> stringResource(
-                                R.string.update_available,
-                                latestVersion
-                            )
-                            hasCheckedUpdates -> stringResource(R.string.update_check_up_to_date)
-                            else -> stringResource(R.string.update_check_initial)
-                        },
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Button(
-                        onClick = onCheckForUpdates,
-                        enabled = !isCheckingUpdates && !isDownloadingUpdate,
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text(stringResource(if (isCheckingUpdates) R.string.checking_for_updates else R.string.check_for_updates))
-                    }
-                    if (updateAvailable && apkUrl != null) {
-                        Button(
-                            onClick = onDownloadAndInstall,
-                            enabled = !isDownloadingUpdate && !isCheckingUpdates,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(stringResource(if (isDownloadingUpdate) R.string.downloading_update else R.string.download_and_install))
-                        }
-                    }
-                    if (isDownloadingUpdate) {
-                        val progress = downloadProgress
-                        if (progress != null) {
-                            LinearProgressIndicator(
-                                progress = { progress },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        } else {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        }
-                    }
-                    if (updateAvailable && releaseUrl != null) {
-                        OutlinedButton(
-                            onClick = { onOpenReleasePage(releaseUrl) },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(stringResource(R.string.open_release_page))
-                        }
-                    }
-                }
-            }
-
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        stringResource(R.string.accessibility_section),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        stringResource(
-                            if (accessibilityServiceEnabled) {
-                                R.string.accessibility_enabled
-                            } else {
-                                R.string.accessibility_disabled
-                            }
-                        ),
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (accessibilityServiceEnabled) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                    Text(
-                        stringResource(R.string.accessibility_disclosure),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Button(
-                        onClick = onOpenAccessibilitySettings,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(stringResource(R.string.open_accessibility_settings))
-                    }
-                }
-            }
-
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        stringResource(R.string.double_tap_section),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    ToggleRow(
-                        label = stringResource(R.string.lock_screen_double_tap),
-                        checked = lockScreenEnabled,
-                        onCheckedChange = {
-                            lockScreenEnabled = it
-                            preferences.edit {
-                                putBoolean(LockTapService.PREF_LOCK_SCREEN, it)
-                            }
-                        }
-                    )
-                    HorizontalDivider()
-                    ToggleRow(
-                        label = stringResource(R.string.home_screen_double_tap),
-                        checked = homeScreenEnabled && detectedLauncherPackage != null,
-                        enabled = detectedLauncherPackage != null,
-                        onCheckedChange = {
-                            homeScreenEnabled = it
-                            preferences.edit {
-                                putBoolean(LockTapService.PREF_HOME_SCREEN, it)
-                            }
-                        }
-                    )
-                }
-            }
-
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        stringResource(R.string.detected_launcher),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        if (launcherIdentificationFailed) {
-                            stringResource(R.string.launcher_detection_failed)
-                        } else {
-                            launcherDisplayName(context, detectedLauncherPackage)
-                        },
-                        style = if (launcherIdentificationFailed) {
-                            MaterialTheme.typography.bodyMedium
-                        } else {
-                            MaterialTheme.typography.titleLarge
-                        }
-                    )
-                    detectedLauncherPackage?.let { packageName ->
                         Text(
-                            packageName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            stringResource(R.string.setup_needed_title),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            stringResource(R.string.setup_needed_body),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Button(
+                            onClick = onOpenAccessibilitySettings,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.open_accessibility_settings))
+                        }
+                    }
+                }
+            }
+
+            SectionCard(stringResource(R.string.gestures_section)) {
+                ToggleRow(
+                    label = stringResource(R.string.lock_screen_double_tap),
+                    summary = stringResource(R.string.lock_screen_summary),
+                    checked = lockScreenEnabled,
+                    onCheckedChange = {
+                        lockScreenEnabled = it
+                        preferences.edit { putBoolean(LockTapService.PREF_LOCK_SCREEN, it) }
+                    }
+                )
+                HorizontalDivider()
+                ToggleRow(
+                    label = stringResource(R.string.home_screen_double_tap),
+                    summary = if (launcherIdentificationFailed) {
+                        stringResource(R.string.launcher_detection_failed)
+                    } else {
+                        stringResource(
+                            R.string.home_screen_summary,
+                            launcherDisplayName(context, detectedLauncherPackage)
+                        )
+                    },
+                    checked = homeScreenEnabled && detectedLauncherPackage != null,
+                    enabled = detectedLauncherPackage != null,
+                    onCheckedChange = {
+                        homeScreenEnabled = it
+                        preferences.edit { putBoolean(LockTapService.PREF_HOME_SCREEN, it) }
+                    }
+                )
+                TextButton(onClick = onRefreshLauncher) {
+                    Text(stringResource(R.string.refresh_launcher))
+                }
+                HorizontalDivider()
+                ToggleRow(
+                    label = stringResource(R.string.four_tap_lockdown),
+                    summary = stringResource(
+                        if (deviceAdminActive) R.string.four_tap_lockdown_hint
+                        else R.string.four_tap_lockdown_needs_admin
+                    ),
+                    checked = lockdownTapsEnabled && deviceAdminActive,
+                    enabled = deviceAdminActive,
+                    onCheckedChange = {
+                        lockdownTapsEnabled = it
+                        preferences.edit { putBoolean(LockTapService.PREF_LOCKDOWN_TAPS, it) }
+                    }
+                )
+            }
+
+            SectionCard(stringResource(R.string.permissions_section)) {
+                PermissionRow(
+                    title = stringResource(R.string.accessibility_title),
+                    description = stringResource(R.string.accessibility_disclosure),
+                    granted = accessibilityServiceEnabled,
+                    actionLabel = stringResource(R.string.open_accessibility_settings),
+                    onAction = onOpenAccessibilitySettings
+                )
+                HorizontalDivider()
+                PermissionRow(
+                    title = stringResource(R.string.device_admin_title),
+                    description = stringResource(R.string.device_admin_description),
+                    granted = deviceAdminActive,
+                    actionLabel = stringResource(
+                        if (deviceAdminActive) R.string.remove_device_admin
+                        else R.string.grant_device_admin
+                    ),
+                    onAction = if (deviceAdminActive) onRemoveDeviceAdmin else onRequestDeviceAdmin,
+                    outlined = deviceAdminActive
+                )
+            }
+
+            SectionCard(stringResource(R.string.updates_section)) {
+                Text(
+                    when {
+                        isCheckingUpdates -> stringResource(R.string.checking_for_updates)
+                        isDownloadingUpdate -> downloadProgress?.let {
+                            stringResource(R.string.downloading_update_percent, (it * 100).toInt())
+                        } ?: stringResource(R.string.downloading_update)
+                        updateInstallFailed -> stringResource(R.string.update_download_failed)
+                        installPermissionRequested -> stringResource(R.string.install_permission_hint)
+                        updateCheckFailed -> stringResource(R.string.update_check_failed)
+                        updateAvailable && latestVersion != null ->
+                            stringResource(R.string.update_available, latestVersion)
+                        hasCheckedUpdates -> stringResource(R.string.update_check_up_to_date)
+                        else -> stringResource(R.string.update_check_initial)
+                    },
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                if (updateAvailable && apkUrl != null) {
+                    Button(
+                        onClick = onDownloadAndInstall,
+                        enabled = !isDownloadingUpdate && !isCheckingUpdates,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            stringResource(
+                                if (isDownloadingUpdate) R.string.downloading_update
+                                else R.string.download_and_install
+                            )
                         )
                     }
-                    OutlinedButton(
-                        onClick = onRefreshLauncher,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(stringResource(R.string.refresh_launcher))
+                }
+                if (isDownloadingUpdate) {
+                    val progress = downloadProgress
+                    if (progress != null) {
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                ActionButton(
+                    label = stringResource(
+                        if (isCheckingUpdates) R.string.checking_for_updates
+                        else R.string.check_for_updates
+                    ),
+                    onClick = onCheckForUpdates,
+                    enabled = !isCheckingUpdates && !isDownloadingUpdate,
+                    outlined = updateAvailable
+                )
+                if (updateAvailable && releaseUrl != null) {
+                    TextButton(onClick = { onOpenReleasePage(releaseUrl) }) {
+                        Text(stringResource(R.string.open_release_page))
                     }
                 }
             }
+
+            versionName?.let {
+                Text(
+                    stringResource(R.string.version_label, it),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    textAlign = TextAlign.Center
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ActionButton(
+    label: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    outlined: Boolean = false
+) {
+    val modifier = Modifier.fillMaxWidth()
+    if (outlined) {
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier) { Text(label) }
+    } else {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier) { Text(label) }
+    }
+}
+
+@Composable
+private fun PermissionRow(
+    title: String,
+    description: String,
+    granted: Boolean,
+    actionLabel: String,
+    onAction: () -> Unit,
+    outlined: Boolean = false
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium
+            )
+            StatusPill(granted)
+        }
+        Text(
+            description,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        ActionButton(actionLabel, onAction, outlined = outlined)
+    }
+}
+
+@Composable
+private fun StatusPill(granted: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (granted) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = if (granted) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Text(
+            stringResource(if (granted) R.string.status_on else R.string.status_off),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.labelMedium
+        )
     }
 }
 
@@ -459,10 +602,12 @@ private fun launcherDisplayName(context: Context, packageName: String?): String 
 @Composable
 private fun ToggleRow(
     label: String,
+    summary: String,
     checked: Boolean,
     enabled: Boolean = true,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val alpha = if (enabled) 1f else 0.38f
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -473,20 +618,22 @@ private fun ToggleRow(
                 onValueChange = onCheckedChange
             )
             .heightIn(min = 56.dp)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(
-            label,
-            modifier = Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (enabled) {
-                MaterialTheme.colorScheme.onSurface
-            } else {
-                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-            }
-        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
+            )
+            Text(
+                summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)
+            )
+        }
         Switch(checked = checked, onCheckedChange = null, enabled = enabled)
     }
 }
