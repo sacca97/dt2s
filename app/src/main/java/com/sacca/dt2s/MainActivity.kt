@@ -62,41 +62,21 @@ class MainActivity : ComponentActivity() {
     private var accessibilityServiceEnabled by mutableStateOf(false)
     private var detectedLauncherPackage by mutableStateOf<String?>(null)
     private var launcherIdentificationFailed by mutableStateOf(false)
-    private var isCheckingUpdates by mutableStateOf(false)
-    private var updateCheckFailed by mutableStateOf(false)
-    private var hasCheckedUpdates by mutableStateOf(false)
-    private var updateAvailable by mutableStateOf(false)
-    private var latestVersion by mutableStateOf<String?>(null)
-    private var releaseUrl by mutableStateOf<String?>(null)
-    private var apkUrl by mutableStateOf<String?>(null)
-    private var isDownloadingUpdate by mutableStateOf(false)
-    private var downloadProgress by mutableStateOf<Float?>(null)
-    private var updateInstallFailed by mutableStateOf(false)
-    private var installPermissionRequested by mutableStateOf(false)
+    private var update by mutableStateOf(UpdateUiState())
     private var deviceAdminActive by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         UpdateCheckWorker.schedule(this)
-        refreshUpdateStatus()
+        update = update.withStored(this)
         setContent {
             Dt2sTheme {
                 Dt2sScreen(
                     accessibilityServiceEnabled = accessibilityServiceEnabled,
                     detectedLauncherPackage = detectedLauncherPackage,
                     launcherIdentificationFailed = launcherIdentificationFailed,
-                    isCheckingUpdates = isCheckingUpdates,
-                    updateCheckFailed = updateCheckFailed,
-                    hasCheckedUpdates = hasCheckedUpdates,
-                    updateAvailable = updateAvailable,
-                    latestVersion = latestVersion,
-                    releaseUrl = releaseUrl,
-                    apkUrl = apkUrl,
-                    isDownloadingUpdate = isDownloadingUpdate,
-                    downloadProgress = downloadProgress,
-                    updateInstallFailed = updateInstallFailed,
-                    installPermissionRequested = installPermissionRequested,
+                    update = update,
                     deviceAdminActive = deviceAdminActive,
                     onRequestDeviceAdmin = ::requestDeviceAdmin,
                     onRemoveDeviceAdmin = ::removeDeviceAdmin,
@@ -114,11 +94,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (installPermissionRequested) {
-            installPermissionRequested = false
+        if (update.notice == UpdateNotice.InstallPermissionNeeded) {
+            update = update.clearNotice()
             if (UpdateInstaller.canRequestInstalls(this)) downloadAndInstall()
         }
-        refreshUpdateStatus()
+        update = update.withStored(this)
         accessibilityServiceEnabled = isAccessibilityServiceEnabled()
         refreshDeviceAdmin()
         val preferences = getSharedPreferences(LockTapService.PREFS_NAME, MODE_PRIVATE)
@@ -164,68 +144,50 @@ class MainActivity : ComponentActivity() {
         refreshDeviceAdmin()
     }
 
-    private fun refreshUpdateStatus() {
-        val preferences = getSharedPreferences(UpdateChecker.PREFS_NAME, MODE_PRIVATE)
-        hasCheckedUpdates = preferences.getLong(UpdateChecker.PREF_CHECKED_AT, 0L) > 0L
-        updateAvailable = preferences.getBoolean(UpdateChecker.PREF_UPDATE_AVAILABLE, false)
-        latestVersion = preferences.getString(UpdateChecker.PREF_LATEST_VERSION, null)
-        releaseUrl = preferences.getString(UpdateChecker.PREF_RELEASE_URL, null)
-        apkUrl = preferences.getString(UpdateChecker.PREF_APK_URL, null)
-    }
-
     private fun checkForUpdates() {
-        if (isCheckingUpdates) return
-        isCheckingUpdates = true
-        updateCheckFailed = false
+        if (update.isBusy) return
+        update = update.startCheck()
         lifecycleScope.launch {
-            try {
+            update = try {
                 val check = withContext(Dispatchers.IO) { UpdateChecker.check(this@MainActivity) }
                 UpdateChecker.save(this@MainActivity, check)
-                hasCheckedUpdates = true
-                updateAvailable = check.updateAvailable
-                latestVersion = check.latestVersion
-                releaseUrl = check.releaseUrl
-                apkUrl = check.apkUrl
+                update.finishCheck(check)
             } catch (_: Exception) {
-                updateCheckFailed = true
-            } finally {
-                isCheckingUpdates = false
+                update.failCheck()
             }
         }
     }
 
     private fun downloadAndInstall() {
-        if (isDownloadingUpdate) return
-        val url = apkUrl ?: return
-        val version = latestVersion ?: return
+        if (update.isBusy) return
+        val release = update.availableRelease ?: return
+        val url = release.apkUrl ?: return
         if (!UpdateInstaller.canRequestInstalls(this)) {
-            installPermissionRequested = true
+            update = update.needInstallPermission()
             startActivity(UpdateInstaller.manageUnknownSourcesIntent(this))
             return
         }
-        isDownloadingUpdate = true
-        updateInstallFailed = false
-        downloadProgress = null
+        update = update.startDownload()
         lifecycleScope.launch {
-            try {
+            update = try {
                 var lastPercent = -1
                 val apk = withContext(Dispatchers.IO) {
-                    UpdateInstaller.download(this@MainActivity, url, version) { downloaded, total ->
+                    UpdateInstaller.download(this@MainActivity, url, release.latestVersion) { downloaded, total ->
                         val percent = if (total > 0) ((downloaded * 100) / total).toInt() else -1
                         if (percent != lastPercent) {
                             lastPercent = percent
                             lifecycleScope.launch {
-                                downloadProgress = if (percent >= 0) percent / 100f else null
+                                update = update.downloadProgress(
+                                    if (percent >= 0) percent / 100f else null
+                                )
                             }
                         }
                     }
                 }
                 UpdateInstaller.install(this@MainActivity, apk)
+                update.finishDownload()
             } catch (_: Exception) {
-                updateInstallFailed = true
-            } finally {
-                isDownloadingUpdate = false
-                downloadProgress = null
+                update.failInstall()
             }
         }
     }
@@ -267,17 +229,7 @@ private fun Dt2sScreen(
     accessibilityServiceEnabled: Boolean,
     detectedLauncherPackage: String?,
     launcherIdentificationFailed: Boolean,
-    isCheckingUpdates: Boolean,
-    updateCheckFailed: Boolean,
-    hasCheckedUpdates: Boolean,
-    updateAvailable: Boolean,
-    latestVersion: String?,
-    releaseUrl: String?,
-    apkUrl: String?,
-    isDownloadingUpdate: Boolean,
-    downloadProgress: Float?,
-    updateInstallFailed: Boolean,
-    installPermissionRequested: Boolean,
+    update: UpdateUiState,
     deviceAdminActive: Boolean,
     onRequestDeviceAdmin: () -> Unit,
     onRemoveDeviceAdmin: () -> Unit,
@@ -433,38 +385,41 @@ private fun Dt2sScreen(
             }
 
             SectionCard(stringResource(R.string.updates_section)) {
+                val phase = update.phase
+                val available = update.availableRelease
                 Text(
-                    when {
-                        isCheckingUpdates -> stringResource(R.string.checking_for_updates)
-                        isDownloadingUpdate -> downloadProgress?.let {
+                    when (phase) {
+                        UpdatePhase.Checking -> stringResource(R.string.checking_for_updates)
+                        is UpdatePhase.Downloading -> phase.progress?.let {
                             stringResource(R.string.downloading_update_percent, (it * 100).toInt())
                         } ?: stringResource(R.string.downloading_update)
-                        updateInstallFailed -> stringResource(R.string.update_download_failed)
-                        installPermissionRequested -> stringResource(R.string.install_permission_hint)
-                        updateCheckFailed -> stringResource(R.string.update_check_failed)
-                        updateAvailable && latestVersion != null ->
-                            stringResource(R.string.update_available, latestVersion)
-                        hasCheckedUpdates -> stringResource(R.string.update_check_up_to_date)
-                        else -> stringResource(R.string.update_check_initial)
+                        UpdatePhase.Idle -> when {
+                            update.notice == UpdateNotice.InstallFailed ->
+                                stringResource(R.string.update_download_failed)
+                            update.notice == UpdateNotice.InstallPermissionNeeded ->
+                                stringResource(R.string.install_permission_hint)
+                            update.notice == UpdateNotice.CheckFailed ->
+                                stringResource(R.string.update_check_failed)
+                            available != null ->
+                                stringResource(R.string.update_available, available.latestVersion)
+                            update.hasChecked -> stringResource(R.string.update_check_up_to_date)
+                            else -> stringResource(R.string.update_check_initial)
+                        }
                     },
                     style = MaterialTheme.typography.bodyMedium
                 )
-                if (updateAvailable && apkUrl != null) {
-                    Button(
+                if (available?.apkUrl != null) {
+                    ActionButton(
+                        label = stringResource(
+                            if (phase is UpdatePhase.Downloading) R.string.downloading_update
+                            else R.string.download_and_install
+                        ),
                         onClick = onDownloadAndInstall,
-                        enabled = !isDownloadingUpdate && !isCheckingUpdates,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            stringResource(
-                                if (isDownloadingUpdate) R.string.downloading_update
-                                else R.string.download_and_install
-                            )
-                        )
-                    }
+                        enabled = !update.isBusy
+                    )
                 }
-                if (isDownloadingUpdate) {
-                    val progress = downloadProgress
+                if (phase is UpdatePhase.Downloading) {
+                    val progress = phase.progress
                     if (progress != null) {
                         LinearProgressIndicator(
                             progress = { progress },
@@ -476,15 +431,15 @@ private fun Dt2sScreen(
                 }
                 ActionButton(
                     label = stringResource(
-                        if (isCheckingUpdates) R.string.checking_for_updates
+                        if (phase == UpdatePhase.Checking) R.string.checking_for_updates
                         else R.string.check_for_updates
                     ),
                     onClick = onCheckForUpdates,
-                    enabled = !isCheckingUpdates && !isDownloadingUpdate,
-                    outlined = updateAvailable
+                    enabled = !update.isBusy,
+                    outlined = available != null
                 )
-                if (updateAvailable && releaseUrl != null) {
-                    TextButton(onClick = { onOpenReleasePage(releaseUrl) }) {
+                if (available != null) {
+                    TextButton(onClick = { onOpenReleasePage(available.releaseUrl) }) {
                         Text(stringResource(R.string.open_release_page))
                     }
                 }

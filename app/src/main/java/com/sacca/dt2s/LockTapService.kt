@@ -45,14 +45,6 @@ class LockTapService : AccessibilityService() {
         const val PREF_LAUNCHER_PACKAGE = "launcher_package"
         const val PREF_LAUNCHER_CHECKED_AT = "launcher_checked_at"
         const val LAUNCHER_REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
-        private const val DOUBLE_TAP_TIMEOUT_MS = 300L
-        private const val MIN_TAP_INTERVAL_MS = 40L
-        private const val LOCKDOWN_TAP_COUNT = 3
-        // With triple-tap lockdown on, the double-tap lock waits this long for a third tap.
-        private const val LOCKDOWN_WINDOW_MS = 300L
-        // Time to wait after the second tap for a click/scroll event that would veto the lock.
-        // Click events fire on finger-up (~100 ms), so this is much shorter than a long press.
-        private const val CANDIDATE_CONFIRM_DELAY_MS = 150L
         private const val LAUNCHER_RECHECK_DELAY_MS = 300L
         private const val LAUNCHER_TRUST_WINDOW_MS = 1500L
         private const val POST_UNLOCK_REFRESH_DELAY_MS = 350L
@@ -100,9 +92,7 @@ class LockTapService : AccessibilityService() {
     private var foregroundPackage: String? = null
     private var launcherPackage: String? = null
     private var watcher: View? = null
-    private var lastTapTime = 0L
-    private var tapCount = 0
-    private var candidateStartedAt = 0L
+    private val gesture = TapGesture()
     private var receiverRegistered = false
     private var launcherConfirmedAt = 0L
     private var launcherTransitionFromPackage: String? = null
@@ -133,11 +123,7 @@ class LockTapService : AccessibilityService() {
     }
 
     private val pendingSleepRunnable = Runnable {
-        val taps = tapCount
-        val lockdown = taps >= LOCKDOWN_TAP_COUNT
-        candidateStartedAt = 0L
-        lastTapTime = 0L
-        tapCount = 0
+        val lockdown = gesture.confirm()
 
         // A fresh launcher window event beats the window snapshot, which can lag behind
         // during the home transition and would wrongly veto the lock.
@@ -407,55 +393,22 @@ class LockTapService : AccessibilityService() {
     private fun handleTouch(time: Long) {
         if (mode == InteractionMode.OFF) return
 
-        if (candidateStartedAt != 0L) {
-            val delta = time - candidateStartedAt
-            if (tapCount < LOCKDOWN_TAP_COUNT && delta >= MIN_TAP_INTERVAL_MS &&
-                lockdownTapsEnabled()
-            ) {
-                // Third tap while the lock is pending: upgrade it to lockdown. The confirm
-                // window restarts so a click or scroll from this tap can still veto it.
-                tapCount = LOCKDOWN_TAP_COUNT
-                log { "TOUCH #$tapCount delta=$delta mode=$mode" }
+        when (val outcome = gesture.onTap(time, ::isModeStillValid, ::lockdownTapsEnabled)) {
+            TapGesture.Outcome.FirstTap -> log { "TOUCH #1 mode=$mode" }
+
+            is TapGesture.Outcome.Armed -> {
+                log { "TOUCH #${outcome.taps} mode=$mode" }
                 handler.removeCallbacks(pendingSleepRunnable)
-                handler.postDelayed(pendingSleepRunnable, CANDIDATE_CONFIRM_DELAY_MS)
-                return
+                handler.postDelayed(pendingSleepRunnable, outcome.confirmDelayMs)
             }
-            cancelGestureCandidate("touch-during-candidate")
-            return
+
+            TapGesture.Outcome.Cancelled -> {
+                log { "CANCEL reason=touch-during-candidate" }
+                handler.removeCallbacks(pendingSleepRunnable)
+            }
+
+            TapGesture.Outcome.Rejected -> updateMode()
         }
-
-        if (lastTapTime == 0L) {
-            startFirstTap(time)
-            return
-        }
-
-        val delta = time - lastTapTime
-        log { "TOUCH #2 delta=$delta mode=$mode" }
-
-        if (delta !in MIN_TAP_INTERVAL_MS..DOUBLE_TAP_TIMEOUT_MS) {
-            startFirstTap(time)
-            return
-        }
-
-        if (!isModeStillValid()) {
-            lastTapTime = 0L
-            updateMode()
-            return
-        }
-
-        candidateStartedAt = time
-        tapCount = 2
-        log { "CANDIDATE mode=$mode" }
-        handler.postDelayed(
-            pendingSleepRunnable,
-            if (lockdownTapsEnabled()) LOCKDOWN_WINDOW_MS else CANDIDATE_CONFIRM_DELAY_MS
-        )
-    }
-
-    private fun startFirstTap(time: Long) {
-        lastTapTime = time
-        tapCount = 1
-        log { "TOUCH #1 mode=$mode" }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -566,22 +519,11 @@ class LockTapService : AccessibilityService() {
                 SystemClock.uptimeMillis() - launcherConfirmedAt < LAUNCHER_TRUST_WINDOW_MS
 
     private fun cancelForEvent(event: AccessibilityEvent, reason: () -> String) {
-        val afterCandidate = candidateStartedAt != 0L && event.eventTime >= lastTapTime
-        val afterFirstTap = lastTapTime != 0L && event.eventTime >= lastTapTime &&
-                (candidateStartedAt != 0L || event.eventTime - lastTapTime <= DOUBLE_TAP_TIMEOUT_MS)
-
-        if (afterCandidate || afterFirstTap) {
-            cancelGestureCandidate(reason())
-        }
+        if (gesture.isVetoedBy(event.eventTime)) cancelGestureCandidate(reason())
     }
 
     private fun cancelGestureCandidate(reason: String) {
-        if (candidateStartedAt != 0L || lastTapTime != 0L) {
-            log { "CANCEL reason=$reason" }
-        }
-        lastTapTime = 0L
-        candidateStartedAt = 0L
-        tapCount = 0
+        if (gesture.cancel()) log { "CANCEL reason=$reason" }
         handler.removeCallbacks(pendingSleepRunnable)
     }
 
