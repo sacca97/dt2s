@@ -8,7 +8,7 @@
     <string name="permissions_section">Permissions</string>
     <string name="accessibility_title">Accessibility service</string>
     <string name="device_admin_title">Device admin</string>
-    <string name="device_admin_description">Optional. Only used to lock the device and require your PIN, pattern or password for four-tap lockdown. You can remove it any time.</string>
+    <string name="device_admin_description">Optional. Only used to lock the device and require your PIN, pattern or password for triple-tap lockdown. You can remove it any time.</string>
     <string name="grant_device_admin">Grant device admin</string>
     <string name="remove_device_admin">Remove device admin</string>
     <string name="status_on">Enabled</string>
@@ -17,7 +17,7 @@
     <string name="setup_needed_body">Enable DoubleTap2Sleep in Accessibility settings so it can detect your taps.</string>
     <string name="lock_screen_summary">Lock the device by double-tapping the lock screen</string>
     <string name="home_screen_summary">Double-tap an empty spot in %1$s</string>
-    <string name="four_tap_lockdown_needs_admin">Grant device admin below to use this</string>
+    <string name="triple_tap_lockdown_needs_admin">Grant device admin below to use this</string>
     <string name="lockdown_unavailable">Lockdown unavailable, locked normally</string>
     <string name="device_admin_unavailable">Device admin isn\'t available on this device</string>
     <string name="version_label">Version %1$s</string>
@@ -26,9 +26,9 @@
     <string name="refresh_launcher">Refresh launcher</string>
     <string name="lock_screen_double_tap">Lock screen</string>
     <string name="home_screen_double_tap">Home screen</string>
-    <string name="four_tap_lockdown">Four-tap lockdown</string>
-    <string name="four_tap_lockdown_hint">Tap four times quickly to lock and require your PIN, pattern or password (no biometrics)</string>
-    <string name="device_admin_explanation">Lets DoubleTap2Sleep lock the device and require your PIN, pattern or password after a four-tap.</string>
+    <string name="triple_tap_lockdown">Triple-tap lockdown</string>
+    <string name="triple_tap_lockdown_hint">Tap three times quickly to lock and require your PIN, pattern or password (no biometrics)</string>
+    <string name="device_admin_explanation">Lets DoubleTap2Sleep lock the device and require your PIN, pattern or password after a triple tap.</string>
     <string name="updates_section">App updates</string>
     <string name="check_for_updates">Check for updates</string>
     <string name="checking_for_updates">Checking…</string>

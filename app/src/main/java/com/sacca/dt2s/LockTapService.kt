@@ -47,9 +47,9 @@ class LockTapService : AccessibilityService() {
         const val LAUNCHER_REFRESH_INTERVAL_MS = 24L * 60L * 60L * 1000L
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
         private const val MIN_TAP_INTERVAL_MS = 40L
-        // Taps that trigger lockdown. Taps 3 and 4 must each land inside the normal
-        // confirm window, so the plain double-tap lock is never delayed.
-        private const val LOCKDOWN_TAP_COUNT = 4
+        private const val LOCKDOWN_TAP_COUNT = 3
+        // With triple-tap lockdown on, the double-tap lock waits this long for a third tap.
+        private const val LOCKDOWN_WINDOW_MS = 300L
         // Time to wait after the second tap for a click/scroll event that would veto the lock.
         // Click events fire on finger-up (~100 ms), so this is much shorter than a long press.
         private const val CANDIDATE_CONFIRM_DELAY_MS = 150L
@@ -102,7 +102,6 @@ class LockTapService : AccessibilityService() {
     private var watcher: View? = null
     private var lastTapTime = 0L
     private var tapCount = 0
-    private var lastCandidateTapTime = 0L
     private var candidateStartedAt = 0L
     private var receiverRegistered = false
     private var launcherConfirmedAt = 0L
@@ -139,11 +138,6 @@ class LockTapService : AccessibilityService() {
         candidateStartedAt = 0L
         lastTapTime = 0L
         tapCount = 0
-        // Three taps is neither a double tap nor lockdown; keep the old behaviour (no lock).
-        if (taps == LOCKDOWN_TAP_COUNT - 1) {
-            log { "CANCEL reason=three-taps" }
-            return@Runnable
-        }
 
         // A fresh launcher window event beats the window snapshot, which can lag behind
         // during the home transition and would wrongly veto the lock.
@@ -414,14 +408,13 @@ class LockTapService : AccessibilityService() {
         if (mode == InteractionMode.OFF) return
 
         if (candidateStartedAt != 0L) {
-            val delta = time - lastCandidateTapTime
+            val delta = time - candidateStartedAt
             if (tapCount < LOCKDOWN_TAP_COUNT && delta >= MIN_TAP_INTERVAL_MS &&
                 lockdownTapsEnabled()
             ) {
-                // Extra tap while the lock is pending: restart the confirm window. A stop
-                // after tap 3 cancels; tap 4 upgrades the lock to lockdown.
-                tapCount++
-                lastCandidateTapTime = time
+                // Third tap while the lock is pending: upgrade it to lockdown. The confirm
+                // window restarts so a click or scroll from this tap can still veto it.
+                tapCount = LOCKDOWN_TAP_COUNT
                 log { "TOUCH #$tapCount delta=$delta mode=$mode" }
                 handler.removeCallbacks(pendingSleepRunnable)
                 handler.postDelayed(pendingSleepRunnable, CANDIDATE_CONFIRM_DELAY_MS)
@@ -451,12 +444,11 @@ class LockTapService : AccessibilityService() {
         }
 
         candidateStartedAt = time
-        lastCandidateTapTime = time
         tapCount = 2
         log { "CANDIDATE mode=$mode" }
         handler.postDelayed(
             pendingSleepRunnable,
-            CANDIDATE_CONFIRM_DELAY_MS
+            if (lockdownTapsEnabled()) LOCKDOWN_WINDOW_MS else CANDIDATE_CONFIRM_DELAY_MS
         )
     }
 

@@ -10,6 +10,6 @@ Double-tap the lock screen or home screen to lock your device.
 
 The home-screen option works with your selected launcher.
 
-## Four-tap lockdown
+## Triple-tap lockdown
 
-Optional. Tap four times quickly (each tap within about 150 ms of the last) to lock and require your PIN, pattern or password instead of biometrics. It uses the device-admin "force lock" policy, granted from the Permissions section of the app (remove it there too; Android blocks uninstalling while it is active). Three taps do nothing, and a normal double tap is unaffected. This relies on `lockNow()` requiring strong authentication afterwards, which can vary by device, so check that biometrics are rejected after a four-tap.
+Optional. Tap three times quickly to lock and require your PIN, pattern or password instead of biometrics. It uses the device-admin "force lock" policy, granted from the Permissions section of the app (remove it there too; Android blocks uninstalling while it is active). While it is on, a normal double tap waits about 300 ms for a possible third tap before locking; with it off, nothing is delayed. This relies on `lockNow()` requiring strong authentication afterwards, which can vary by device, so check that biometrics are rejected after a triple tap.

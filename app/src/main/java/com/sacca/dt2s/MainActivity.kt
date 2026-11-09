@@ -396,10 +396,10 @@ private fun Dt2sScreen(
                 }
                 HorizontalDivider()
                 ToggleRow(
-                    label = stringResource(R.string.four_tap_lockdown),
+                    label = stringResource(R.string.triple_tap_lockdown),
                     summary = stringResource(
-                        if (deviceAdminActive) R.string.four_tap_lockdown_hint
-                        else R.string.four_tap_lockdown_needs_admin
+                        if (deviceAdminActive) R.string.triple_tap_lockdown_hint
+                        else R.string.triple_tap_lockdown_needs_admin
                     ),
                     checked = lockdownTapsEnabled && deviceAdminActive,
                     enabled = deviceAdminActive,

@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.content.edit
 
-/** Holds the force-lock device admin policy used by four-tap lockdown. */
+/** Holds the force-lock device admin policy used by triple-tap lockdown. */
 class LockdownAdminReceiver : DeviceAdminReceiver() {
 
     // Revoking admin (in-app or in system settings) turns the gesture off, so granting it
